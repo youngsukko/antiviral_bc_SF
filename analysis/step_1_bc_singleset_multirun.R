@@ -22,6 +22,7 @@
 library(dplyr)
 library(ggplot2)
 library(parallel)
+library(arrow)
 
 source("functions/network_bp_sim.R")
 
@@ -130,7 +131,8 @@ quarantine_fn       <- function(n) runif(n, 0, 2)
 n_sim                   <- 500
 epidemic_prob_threshold <- 0.999
 seeding_cases           <- 1
-n_cores                 <- max(1L, detectCores() - 1L)
+# n_cores                 <- max(1L, detectCores() - 1L)
+n_cores                 <- 10
 
 
 # ==============================================================================

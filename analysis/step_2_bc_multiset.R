@@ -75,6 +75,7 @@
 
 library(dplyr)
 library(parallel)
+library(arrow)
 
 source("functions/network_bp_sim.R")
 
@@ -168,7 +169,8 @@ quarantine_efficacy <- 0.9
 n_sim                   <- 500
 epidemic_prob_threshold <- 0.999
 seeding_cases           <- 1
-n_cores                 <- max(1L, detectCores() - 1L)
+# n_cores                 <- max(1L, detectCores() - 1L)
+n_cores                 <- 100
 
 
 # ==============================================================================
@@ -241,9 +243,11 @@ intervention_levels <- list(
   )
 )
 
-e_max_multipliers  <- seq(0, 1.0, by = 0.2)
-delay_upper_bounds <- c(1, 2, 3, 4)
-av_start_days      <- c(0, 7, 14, 21, 28)
+e_max_multipliers  <- seq(0, 1.0, by = 0.25)
+# delay_upper_bounds <- c(1, 2, 3, 4)
+delay_upper_bounds <- c(1, 4)
+# av_start_days      <- c(0, 7, 14, 21, 28)
+av_start_days      <- c(0, 14, 28)
 
 scenario_grid <- expand.grid(
   pathogen        = names(pathogen_params),

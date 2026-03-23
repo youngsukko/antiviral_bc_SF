@@ -86,14 +86,14 @@ infectious_before_onset_fn <- pg$infectious_before_onset_fn
 # --- Antiviral efficacy — community infection prevention ----------------------
 # Logistic decay: E(t) = e_max / (1 + exp(kappa * (t - tau)))
 antiviral_eff_inf_e_max   <- 0.50
-antiviral_eff_inf_kappa   <- 7.51
-antiviral_eff_inf_tau     <- 1.34
+antiviral_eff_inf_kappa   <- 6.05
+antiviral_eff_inf_tau     <- 0.32
 
 # --- Antiviral efficacy — household infection prevention ----------------------
 # Separate logistic; household PEP trials report higher efficacy.
-antiviral_eff_inf_hh_e_max  <- 0.63
-antiviral_eff_inf_hh_kappa  <- 6.06
-antiviral_eff_inf_hh_tau    <- 0.89
+antiviral_eff_inf_hh_e_max  <- 0.71
+antiviral_eff_inf_hh_kappa  <- 6.91
+antiviral_eff_inf_hh_tau    <- 1.10
 
 # --- Antiviral efficacy — transmission reduction (source side) ----------------
 # Anchored to symptom onset (or time_infectious proxy for asymptomatic).
@@ -344,7 +344,7 @@ if (n_infected == 0) {
     theme_minimal(base_size = 13) +
     theme(plot.title = element_text(face = "bold"))
   
-  path_epi <- file.path(figure_dir, "plot_singlerun_epi_curve.png")
+  path_epi <- file.path(figure_dir, "bc_onerun_epi_curve.png")
   ggsave(path_epi, p_epi, width = 10, height = 5, dpi = 150)
   cat(sprintf("Saved: %s\n", path_epi))
   
@@ -415,7 +415,7 @@ if (n_infected == 0) {
       plot.title         = element_text(face = "bold")
     )
   
-  path_tree <- file.path(figure_dir, "plot_singlerun_transmission_tree.png")
+  path_tree <- file.path(figure_dir, "bc_onerun_transmission_tree.png")
   ggsave(path_tree, p_tree,
          width  = 10,
          height = max(4, min(14, n_infected / 15)),

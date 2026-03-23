@@ -10,6 +10,35 @@
 
 
 # ==============================================================================
+# Antiviral efficacy functions (global defaults; may be overridden inside
+# run_scenario() by locally-scoped closures).
+#
+# Infection prevention — community contacts (logistic decay in time since PEP):
+#   E(t) = e_max / (1 + exp(kappa * (t - tau)))
+#
+# Infection prevention — household contacts (separate logistic; household
+#   prophylaxis trials consistently show higher efficacy than community trials):
+#   E_hh(t) = e_max_hh / (1 + exp(kappa_hh * (t - tau_hh)))
+#   Default parameters (Hayden 2004 household PEP data):
+#     e_max = 0.63, kappa = 6.06, tau = 0.89
+#
+# Transmission reduction — source-side (anchored to symptom onset):
+#   E(t) = e_max / (1 + exp(kappa * (t - tau)))
+# ==============================================================================
+drug_eff_inf_fn <- function(t)
+  antiviral_eff_inf_e_max / (1 + exp(antiviral_eff_inf_kappa * (t - antiviral_eff_inf_tau)))
+
+# Household-specific infection prevention efficacy function.
+# Parameters reflect higher household PEP efficacy observed in dedicated
+# household trials (e.g., Hayden 2004) relative to community-level estimates.
+drug_eff_inf_hh_fn <- function(t)
+  antiviral_eff_inf_hh_e_max / (1 + exp(antiviral_eff_inf_hh_kappa * (t - antiviral_eff_inf_hh_tau)))
+
+drug_eff_trans_fn <- function(t)
+  antiviral_eff_trans_e_max / (1 + exp(antiviral_eff_trans_kappa * (t - antiviral_eff_trans_tau)))
+
+
+# ==============================================================================
 # precompute_neighbors()
 #
 # Builds per-person household and community neighbor lists from a net_data
@@ -25,13 +54,6 @@
 #     $household  : neighbor person_ids connected by a household edge
 #     $community  : neighbor person_ids connected by a community edge
 # ==============================================================================
-drug_eff_inf_fn <- function(t)
-  antiviral_eff_inf_e_max / (1 + exp(antiviral_eff_inf_kappa * (t - antiviral_eff_inf_tau)))
-
-drug_eff_trans_fn <- function(t)
-  antiviral_eff_trans_e_max / (1 + exp(antiviral_eff_trans_kappa * (t - antiviral_eff_trans_tau)))
-
-
 precompute_neighbors <- function(net_data) {
   
   n_people <- nrow(net_data$nodes)
@@ -72,20 +94,33 @@ precompute_neighbors <- function(net_data) {
 # Household and community contacts are handled separately with their own SAR,
 # treatment probability, and quarantine probability.
 #
-# Epidemic termination (Whittle 1955):
-#   At each iteration, the number of active (queued) infections i is checked.
-#   Under a branching process approximation, the probability that all i active
-#   lineages go extinct without causing a major epidemic is (1/R0)^i.
-#   The simulation is therefore declared an epidemic and terminated early when
-#   the active queue size i satisfies:
+# Epidemic termination (Whittle 1955 — asymptomatic-only threshold):
+#   Symptomatic cases are subject to strong intervention (self-quarantine,
+#   self-treatment, ring PEP triggered by symptom onset). Their contribution
+#   to onward transmission is therefore substantially suppressed, making them
+#   poor proxies for the uncontrolled epidemic risk. The threshold is therefore
+#   evaluated against the number of ASYMPTOMATIC active infections only:
 #
-#       1 - (1/R0)^i  >=  epidemic_prob_threshold
-#   <=> (1/R0)^i      <=  1 - epidemic_prob_threshold
-#   <=> i             >=  log(1 - epidemic_prob_threshold) / log(1/R0)
+#       i_asymp = |{j in active_queue : tdf$asymptomatic[j] == 1L}|
+#
+#   Under a branching process approximation, the probability that all i_asymp
+#   lineages go extinct without causing a major epidemic is (1/R0)^i_asymp.
+#   The simulation is declared an epidemic and terminated early when:
+#
+#       1 - (1/R0)^i_asymp  >=  epidemic_prob_threshold
+#   <=> (1/R0)^i_asymp      <=  1 - epidemic_prob_threshold
+#   <=> i_asymp             >=  log(1 - epidemic_prob_threshold) / log(1/R0)
 #
 #   Default threshold = 0.999 (i.e., 99.9% confidence of epidemic).
-#   The minimum queue size that triggers this is precomputed once as
-#   epidemic_queue_threshold and checked at the top of each loop iteration.
+#   The minimum asymptomatic queue size that triggers this is precomputed once
+#   as epidemic_queue_threshold and checked at the top of each loop iteration.
+#
+# Household vs. community infection prevention efficacy:
+#   Pruning gate [4] (target-side infection prevention) uses two separate
+#   logistic efficacy functions:
+#     - Household contacts : drug_eff_inf_hh_fn  (higher e_max; household PEP trials)
+#     - Community contacts : drug_eff_inf_fn      (community-level estimates)
+#   The corresponding e_max denominators are eff_inf_hh_e_max and eff_inf_e_max.
 #
 # Intervention cascade for each infected person (idx):
 #   Step 1: Draw logistical delay for this person's ring
@@ -98,6 +133,7 @@ precompute_neighbors <- function(net_data) {
 #          [2] Source-side transmission reduction (treated index)
 #          [3] Quarantine block (only for exposures after quarantine start)
 #          [4] Target-side infection prevention (neighbor received PEP)
+#              — uses household or community efficacy function by contact type
 #
 # Key design:
 #   tdf is pre-allocated for all N people (person_id == row index -> O(1) lookup).
@@ -105,29 +141,32 @@ precompute_neighbors <- function(net_data) {
 #   so repeated calls on the same network incur no redundant computation.
 #
 # Arguments:
-#   neighbors_by_type       : output of precompute_neighbors()
-#   node_df                 : net_data$nodes — needs $person_id, $household
-#   R0                      : basic reproduction number (used for epidemic threshold)
-#   epidemic_prob_threshold : P(epidemic) threshold to declare early termination
-#                             (default 0.999)
-#   generation_time_fn      : function(n) — draw n generation times
-#   infection_to_onset_fn   : function(n) — draw n incubation periods
-#   prop_asymptomatic       : proportion of infections that are asymptomatic
-#   p_inf_household         : per-contact SAR within household
-#   p_inf_community         : per-contact SAR in community
-#   antiviral_start         : day AV program begins
-#   logistical_delay_fn     : function(n) — draw n logistical delays
-#   drug_eff_inf_fn         : function(t) — infection prevention efficacy at time t
-#   drug_eff_trans_fn       : function(t) — transmission reduction efficacy at time t
-#   eff_inf_e_max           : denominator for relative infection prevention efficacy
-#   eff_trans_e_max         : denominator for relative transmission reduction efficacy
+#   neighbors_by_type           : output of precompute_neighbors()
+#   node_df                     : net_data$nodes — needs $person_id, $household
+#   R0                          : basic reproduction number (used for epidemic threshold)
+#   epidemic_prob_threshold     : P(epidemic) threshold to declare early termination
+#                                 (default 0.999); evaluated on asymptomatic queue only
+#   generation_time_fn          : function(n) — draw n generation times
+#   infection_to_onset_fn       : function(n) — draw n incubation periods
+#   infectious_before_onset_fn  : function(n) — pulling latent period from incubation period (proportion)
+#   prop_asymptomatic           : proportion of infections that are asymptomatic
+#   p_inf_household             : per-contact SAR within household
+#   p_inf_community             : per-contact SAR in community
+#   antiviral_start             : day AV program begins
+#   logistical_delay_fn         : function(n) — draw n logistical delays
+#   drug_eff_inf_fn             : function(t) — community infection prevention efficacy at t
+#   drug_eff_inf_hh_fn          : function(t) — household infection prevention efficacy at t
+#   drug_eff_trans_fn           : function(t) — transmission reduction efficacy at t
+#   eff_inf_e_max               : denominator for relative community infection prevention efficacy
+#   eff_inf_hh_e_max            : denominator for relative household infection prevention efficacy
+#   eff_trans_e_max             : denominator for relative transmission reduction efficacy
 #   prob_treat_self/household/community    : PEP acceptance probabilities by reason
-#   time_to_quarantine_fn   : function(n) — draw n quarantine delays
+#   time_to_quarantine_fn       : function(n) — draw n quarantine delays
 #   prob_quarantine_self/household/community : quarantine probabilities by reason
-#   quarantine_efficacy     : P(block | transmission would occur after quarantine)
-#   seeding_cases           : number of index cases at t0
-#   t0                      : simulation start time (default 0)
-#   seed                    : RNG seed
+#   quarantine_efficacy         : P(block | transmission would occur after quarantine)
+#   seeding_cases               : number of index cases at t0
+#   t0                          : simulation start time (default 0)
+#   seed                        : RNG seed
 #
 # Returns:
 #   list(
@@ -142,11 +181,11 @@ network_bp_sim <- function(
     node_df,
     R0,
     epidemic_prob_threshold = 0.999,
-    generation_time_fn, infection_to_onset_fn, prop_asymptomatic,
+    generation_time_fn, infection_to_onset_fn, infectious_before_onset_fn, prop_asymptomatic,
     p_inf_household, p_inf_community,
     antiviral_start, logistical_delay_fn,
-    drug_eff_inf_fn, drug_eff_trans_fn,
-    eff_inf_e_max, eff_trans_e_max,
+    drug_eff_inf_fn, drug_eff_inf_hh_fn, drug_eff_trans_fn,
+    eff_inf_e_max, eff_inf_hh_e_max, eff_trans_e_max,
     prob_treat_self, prob_treat_household, prob_treat_community,
     time_to_quarantine_fn,
     prob_quarantine_self, prob_quarantine_household, prob_quarantine_community,
@@ -159,7 +198,12 @@ network_bp_sim <- function(
   n_people <- nrow(node_df)
   
   # --------------------------------------------------------------------------
-  # Precompute the active queue size that triggers epidemic declaration.
+  # Precompute the asymptomatic queue size that triggers epidemic declaration.
+  #
+  # Threshold is based solely on asymptomatic active infections because
+  # symptomatic cases trigger strong intervention (self-isolation, ring PEP)
+  # and are not reliable proxies for uncontrolled epidemic risk under the
+  # intervention model.
   #
   # We want the smallest integer i such that:
   #   1 - (1/R0)^i >= epidemic_prob_threshold
@@ -221,7 +265,7 @@ network_bp_sim <- function(
     tdf$time_infection[sid]  <- t0
     tdf$asymptomatic[sid]    <- 0L
     tdf$time_onset[sid]      <- t0 + infection_to_onset_fn(1)
-    tdf$time_infectious[sid] <- tdf$time_onset[sid]
+    tdf$time_infectious[sid] <- t0 + (tdf$time_onset[sid] - t0)*infectious_before_onset_fn(1)
   }
   
   active_queue <- seed_ids
@@ -248,13 +292,20 @@ network_bp_sim <- function(
   # Main simulation loop.
   # Exits when:
   #   (a) active_queue is empty -> outbreak contained (natural extinction)
-  #   (b) length(active_queue) >= epidemic_queue_threshold -> epidemic declared
+  #   (b) count of ASYMPTOMATIC cases in active_queue >=
+  #       epidemic_queue_threshold -> epidemic declared
+  #       Rationale: symptomatic cases are intervention-suppressed and should
+  #       not drive the R0-based epidemic probability calculation.
   #       (Whittle 1955: probability of contained outcome is now < 0.1%)
   # --------------------------------------------------------------------------
   while (length(active_queue) > 0) {
     
-    # Epidemic check: active queue large enough that containment is <0.1% likely
-    if (length(active_queue) >= epidemic_queue_threshold) {
+    # Epidemic check: count only asymptomatic active infections.
+    # Symptomatic individuals trigger ring PEP and self-isolate; their
+    # transmission potential is substantially curtailed by the intervention
+    # model and they are therefore excluded from the Whittle threshold.
+    n_asymp_active <- sum(tdf$asymptomatic[active_queue] == 1L, na.rm = TRUE)
+    if (n_asymp_active >= epidemic_queue_threshold) {
       is_epidemic <- TRUE
       break
     }
@@ -263,10 +314,11 @@ network_bp_sim <- function(
     idx          <- active_queue[1]
     active_queue <- active_queue[-1]
     
-    t_idx            <- tdf$time_infection[idx]
+    # t_idx            <- tdf$time_infection[idx]
     is_asymp         <- tdf$asymptomatic[idx]
     t_onset_idx      <- tdf$time_onset[idx]
     t_infectious_idx <- tdf$time_infectious[idx]
+    t_idx            <- if (is_asymp == 0L) t_onset_idx else t_infectious_idx
     gen_idx          <- tdf$generation[idx]
     
     # ------------------------------------------------------------------
@@ -297,7 +349,8 @@ network_bp_sim <- function(
     # ------------------------------------------------------------------
     efficacy_trans_idx <- 0
     if (tdf$treated[idx] == 1L && !is.na(tdf$time_treated[idx]) && is_asymp == 0L) {
-      t_onset_to_drug    <- tdf$time_treated[idx] - t_infectious_idx
+      # t_ref       <- if (is_asymp == 0L) t_onset_idx else t_infectious_idx
+      t_onset_to_drug    <- tdf$time_treated[idx] - t_idx
       efficacy_trans_idx <- drug_eff_trans_fn(t_onset_to_drug)
       tdf$efficacy_transmission[idx] <- efficacy_trans_idx / eff_trans_e_max
     }
@@ -349,13 +402,24 @@ network_bp_sim <- function(
           }
         }
         
-        # [Pruning 4] Target-side infection prevention
+        # [Pruning 4] Target-side infection prevention.
+        # Household contacts receive drug_eff_inf_hh_fn (higher efficacy
+        # consistent with household PEP trial data); community contacts
+        # receive drug_eff_inf_fn (community-level estimates).
         pep_prevented       <- FALSE
         efficacy_inf_record <- NA_real_
         if (tdf$treated[nbr_id] == 1L && !is.na(tdf$time_treated[nbr_id])) {
-          t_since_pep         <- tdf$time_treated[nbr_id] - t_infectious_idx
-          efficacy_inf        <- drug_eff_inf_fn(t_since_pep)
-          efficacy_inf_record <- efficacy_inf / eff_inf_e_max
+          # t_ref       <- if (is_asymp == 0L) t_onset_idx else t_infectious_idx
+          t_since_pep <- tdf$time_treated[nbr_id] - t_idx
+          if (grp$ctype == 1L) {
+            # Household contact: use household-specific efficacy function
+            efficacy_inf        <- drug_eff_inf_hh_fn(t_since_pep)
+            efficacy_inf_record <- efficacy_inf / eff_inf_hh_e_max
+          } else {
+            # Community contact: use community-level efficacy function
+            efficacy_inf        <- drug_eff_inf_fn(t_since_pep)
+            efficacy_inf_record <- efficacy_inf / eff_inf_e_max
+          }
           if (rbinom(1, 1, efficacy_inf) == 1L) pep_prevented <- TRUE
         }
         if (pep_prevented) next
@@ -371,9 +435,9 @@ network_bp_sim <- function(
         tdf$asymptomatic[nbr_id] <- is_asymp_nbr
         if (is_asymp_nbr == 0L) {
           tdf$time_onset[nbr_id]      <- t_infection_nbr + infection_to_onset_fn(1)
-          tdf$time_infectious[nbr_id] <- tdf$time_onset[nbr_id]
+          tdf$time_infectious[nbr_id] <- t_infection_nbr + (tdf$time_onset[nbr_id] - t_infection_nbr)*infectious_before_onset_fn(1)
         } else {
-          tdf$time_infectious[nbr_id] <- t_infection_nbr + infection_to_onset_fn(1)
+          tdf$time_infectious[nbr_id] <- t_infection_nbr + infectious_before_onset_fn(1)*infection_to_onset_fn(1)
         }
         
         if (!is.na(efficacy_inf_record))

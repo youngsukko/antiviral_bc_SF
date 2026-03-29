@@ -72,8 +72,8 @@ antiviral_eff_trans_kappa  <- 0.91
 antiviral_eff_trans_tau    <- 1.30
 
 quarantine_efficacy     <- 0.9
-n_sim                   <- 200L
-epidemic_prob_threshold <- 0.999
+n_sim                   <- 500L
+epidemic_prob_threshold <- 0.99
 seeding_cases           <- 1L
 # n_cores                 <- max(1L, detectCores() - 1L)
 n_cores                 <- 100
@@ -146,9 +146,9 @@ intervention_levels <- list(
 
 scenario_grid <- expand.grid(
   pathogen            = names(pathogen_params),
-  R0                  = seq(1.00, 3.00, by = 0.5),
+  R0                  = seq(1, 3.00, by = 0.25),
   # antiviral_start     = c(0, 5, 10, 20, 40),
-  antiviral_start     = c(0, 14, 28),
+  antiviral_start     = c(0, 7, 14, 28),
   e_max_mult          = seq(0.0, 1.0, by = 0.25),
   intervention        = names(intervention_levels),
   seed_symptomatic    = c(TRUE, FALSE),
